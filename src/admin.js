@@ -1,6 +1,13 @@
 const { Markup } = require("telegraf");
 const { config } = require("./config");
-const { db, getSetting, setSetting, formatMoney } = require("./db");
+const {
+  db,
+  getSetting,
+  setSetting,
+  formatMoney,
+  getBroadcastUsers,
+  markUserBlocked
+} = require("./db");
 const {
   adminHomeKeyboard,
   adminSettingsKeyboard,
@@ -204,6 +211,52 @@ Dibuat: <code>${escapeHtml(o.created_at)}</code>`).join("\n\n")
     await safeEditHtml(ctx, `<b>20 Order Terbaru</b>\n\n${body}`, Markup.inlineKeyboard([[Markup.button.callback("⬅️ Admin", "admin:home")]]));
   });
 
+  bot.action("admin:broadcast", requireAdmin, async (ctx) => {
+  await ctx.answerCbQuery();
+
+  const totalUsers = db
+    .prepare("SELECT COUNT(*) AS c FROM users WHERE is_blocked = 0")
+    .get().c;
+
+  setState(ctx.from.id, { type: "broadcast_input" });
+
+  await safeEditHtml(
+    ctx,
+    `<b>Broadcast Admin</b>
+
+Target user aktif: <b>${totalUsers}</b>
+
+Kirim pesan broadcast sekarang.
+Pesan support HTML Telegram dan emoji premium.
+
+Kirim /cancel untuk batal.`,
+    Markup.inlineKeyboard([[Markup.button.callback("⬅️ Admin", "admin:home")]])
+  );
+});
+
+bot.action("admin:broadcast_cancel", requireAdmin, async (ctx) => {
+  clearState(ctx.from.id);
+  await ctx.answerCbQuery("Broadcast dibatalkan");
+  await safeEditHtml(ctx, "<b>Broadcast dibatalkan.</b>", adminHomeKeyboard());
+});
+
+bot.action("admin:broadcast_send", requireAdmin, async (ctx) => {
+  const state = getState(ctx.from.id);
+
+  if (!state || state.type !== "broadcast_confirm" || !state.htmlText) {
+    await ctx.answerCbQuery("Tidak ada broadcast pending.", {
+      show_alert: true
+    });
+    return;
+  }
+
+  clearState(ctx.from.id);
+  await ctx.answerCbQuery("Broadcast dikirim...");
+  await safeEditHtml(ctx, "<b>Mengirim broadcast...</b>");
+
+  await sendBroadcast(ctx, state.htmlText);
+});
+
   bot.action("admin:help", requireAdmin, async (ctx) => {
     await ctx.answerCbQuery();
     await safeEditHtml(ctx, getSetting("admin_help"), Markup.inlineKeyboard([[Markup.button.callback("⬅️ Admin", "admin:home")]]));
@@ -215,10 +268,16 @@ Dibuat: <code>${escapeHtml(o.created_at)}</code>`).join("\n\n")
   const state = getState(ctx.from.id);
   if (!state) return next();
 
+  const rawText = ctx.message.text;
+
+  if (rawText === "/cancel") {
+    clearState(ctx.from.id);
+    return ctx.reply("Dibatalkan.", adminHomeKeyboard());
+  }
+
   clearState(ctx.from.id);
 
   try {
-    const rawText = ctx.message.text;
     const htmlText = textWithCustomEmojiToHtml(ctx.message);
 
     await handleStateText(ctx, state, rawText, htmlText, ctx.message);
@@ -226,11 +285,32 @@ Dibuat: <code>${escapeHtml(o.created_at)}</code>`).join("\n\n")
     console.error(err);
     await ctx.reply(`Gagal: ${err.message}`);
   }
-
 });
 }
 
 async function handleStateText(ctx, state, text, htmlText = text, message = null) {
+if (state.type === "broadcast_input") {
+  setState(ctx.from.id, {
+    type: "broadcast_confirm",
+    htmlText
+  });
+
+  await ctx.reply("Preview broadcast:");
+
+  await ctx.reply(htmlText, {
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...Markup.inlineKeyboard([
+      [
+        Markup.button.callback("✅ Kirim Broadcast", "admin:broadcast_send"),
+        Markup.button.callback("❌ Batal", "admin:broadcast_cancel")
+      ]
+    ])
+  });
+
+  return;
+}
+
   if (state.type === "set_setting") {
   setSetting(state.key, htmlText);
   return ctx.reply(`Setting ${state.key} berhasil disimpan.`, adminHomeKeyboard());
@@ -325,6 +405,70 @@ ${escapeHtml(product.description || "-")}`;
 
   if (edit) return safeEditHtml(ctx, html, adminProductKeyboard(product.id));
   return safeReplyHtml(ctx, html, adminProductKeyboard(product.id));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendBroadcast(ctx, html) {
+  const users = getBroadcastUsers();
+
+  if (!users.length) {
+    return ctx.reply("Belum ada user untuk broadcast.");
+  }
+
+  let sent = 0;
+  let failed = 0;
+  let blocked = 0;
+
+  const progress = await ctx.reply(`Broadcast dimulai ke ${users.length} user...`);
+
+  for (let i = 0; i < users.length; i++) {
+    const user = users[i];
+
+    try {
+      await ctx.telegram.sendMessage(user.chat_id, html, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true
+      });
+
+      sent++;
+    } catch (err) {
+      failed++;
+
+      const desc = String(err.description || err.message || "").toLowerCase();
+
+      if (
+        desc.includes("bot was blocked") ||
+        desc.includes("user is deactivated") ||
+        desc.includes("chat not found") ||
+        desc.includes("forbidden")
+      ) {
+        blocked++;
+        markUserBlocked(user.chat_id);
+      }
+
+      console.error(`Broadcast failed to ${user.chat_id}:`, err.message);
+    }
+
+    if ((i + 1) % 20 === 0 || i + 1 === users.length) {
+      await ctx.telegram
+        .editMessageText(
+          ctx.chat.id,
+          progress.message_id,
+          undefined,
+          `Broadcast berjalan...\n\nTarget: ${users.length}\nTerkirim: ${sent}\nGagal: ${failed}\nBlocked: ${blocked}\nProgress: ${i + 1}/${users.length}`
+        )
+        .catch(() => {});
+    }
+
+    await sleep(70);
+  }
+
+  await ctx.reply(
+    `Broadcast selesai.\n\nTarget: ${users.length}\nTerkirim: ${sent}\nGagal: ${failed}\nBlocked ditandai: ${blocked}`
+  );
 }
 
 module.exports = { registerAdmin, isAdmin, requireAdmin };

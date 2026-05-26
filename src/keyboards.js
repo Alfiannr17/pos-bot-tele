@@ -64,7 +64,8 @@ function adminHomeKeyboard() {
     [Markup.button.callback("🧩 Template Pesan", "admin:templates")],
     [Markup.button.callback("📦 Kelola Produk", "admin:products")],
     [Markup.button.callback("📥 Ringkasan Stok", "admin:stock")],
-    [Markup.button.callback("📑 Order", "admin:orders")]
+    [Markup.button.callback("📑 Order", "admin:orders")],
+    [Markup.button.callback("📢 Broadcast", "admin:broadcast")]
   ]);
 }
 

@@ -15,6 +15,18 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  user_id INTEGER PRIMARY KEY,
+  chat_id INTEGER NOT NULL,
+  username TEXT,
+  first_name TEXT,
+  last_name TEXT,
+  is_blocked INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -65,6 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
 CREATE INDEX IF NOT EXISTS idx_stock_product_status ON stock_items(product_id, status);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
+CREATE INDEX IF NOT EXISTS idx_users_blocked ON users(is_blocked);
 `);
 
 try {
@@ -160,4 +173,55 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-module.exports = { db, getSetting, setSetting, formatMoney, nowIso };
+function upsertUser(ctx) {
+  if (!ctx || !ctx.from || !ctx.chat) return;
+
+  db.prepare(`
+    INSERT INTO users(user_id, chat_id, username, first_name, last_name, updated_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      chat_id = excluded.chat_id,
+      username = excluded.username,
+      first_name = excluded.first_name,
+      last_name = excluded.last_name,
+      updated_at = excluded.updated_at,
+      last_seen_at = excluded.last_seen_at,
+      is_blocked = 0
+  `).run(
+    ctx.from.id,
+    ctx.chat.id,
+    ctx.from.username || "",
+    ctx.from.first_name || "",
+    ctx.from.last_name || "",
+    nowIso(),
+    nowIso()
+  );
+}
+
+function markUserBlocked(chatId) {
+  db.prepare(`
+    UPDATE users
+    SET is_blocked = 1, updated_at = ?
+    WHERE chat_id = ?
+  `).run(nowIso(), chatId);
+}
+
+function getBroadcastUsers() {
+  return db.prepare(`
+    SELECT *
+    FROM users
+    WHERE is_blocked = 0
+    ORDER BY last_seen_at DESC
+  `).all();
+}
+
+module.exports = {
+  db,
+  getSetting,
+  setSetting,
+  formatMoney,
+  nowIso,
+  upsertUser,
+  markUserBlocked,
+  getBroadcastUsers
+};

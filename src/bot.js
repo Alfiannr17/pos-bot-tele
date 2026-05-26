@@ -1,6 +1,6 @@
 const { Telegraf } = require("telegraf");
 const { config } = require("./config");
-const { db, getSetting } = require("./db");
+const { db, getSetting, upsertUser } = require("./db");
 const {
   productListKeyboard,
   productDetailKeyboard,
@@ -11,6 +11,18 @@ const { createCheckout, getOrder, setPaymentMessageId } = require("./orderServic
 const { renderSetting, safeReplyHtml, safeEditHtml } = require("./template");
 
 const bot = new Telegraf(config.botToken);
+
+bot.use(async (ctx, next) => {
+  try {
+    if (ctx.from && ctx.chat && ctx.chat.type === "private") {
+      upsertUser(ctx);
+    }
+  } catch (err) {
+    console.error("Failed to save user:", err.message);
+  }
+
+  return next();
+});
 
 bot.catch((err, ctx) => {
   console.error("BOT ERROR:", err);

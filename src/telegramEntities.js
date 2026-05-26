@@ -1,5 +1,3 @@
-// src/telegramEntities.js
-
 function textWithCustomEmojiToHtml(message) {
   const text = message && typeof message.text === "string" ? message.text : "";
   const entities = Array.isArray(message?.entities) ? message.entities : [];
